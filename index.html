@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CHONKER WATCH</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Chonker">
+<meta name="theme-color" content="#0B1017">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{
+  /* Airbus ECAM/PFD instrument colour code — green normal, amber caution,
+     red warning, cyan selected value, magenta managed target. */
+  --field:#0B1017; --panel:#141C26; --panel2:#1B2530; --rule:#2A3742;
+  --green:#00D17A; --amber:#FFB300; --red:#FF4B3E; --cyan:#5CC8FF; --magenta:#E552FF;
+  --ink:#E8EDF2; --dim:#7C8B99; --dimmer:#4B5A67;
+  --disp:'Saira Condensed',Impact,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--field);color:var(--ink);font-family:var(--mono)}
+body{
+  padding:max(env(safe-area-inset-top),14px) 14px calc(env(safe-area-inset-bottom) + 20px);
+  max-width:560px;margin:0 auto;
+  font-size:13px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── header ───────────────────────────────── */
+.hdr{display:flex;align-items:baseline;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--rule)}
+.route{font-family:var(--disp);font-weight:700;font-size:22px;letter-spacing:.06em}
+.route em{font-style:normal;color:var(--dimmer);padding:0 2px}
+.hdr .spacer{flex:1}
+#stamp{font-size:10px;color:var(--dimmer);letter-spacing:.08em}
+#reload{
+  background:none;border:1px solid var(--rule);color:var(--dim);
+  font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:2px;letter-spacing:.06em;
+}
+#reload:active{background:var(--panel2);color:var(--ink)}
+#reload[data-busy="1"]{color:var(--cyan);border-color:var(--cyan)}
+
+/* ── verdict slab (the signature) ──────────── */
+.slab{margin:14px 0;padding:16px 14px 6px;background:var(--panel);border-radius:3px;position:relative;overflow:hidden}
+.slab:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--dimmer)}
+.slab[data-s="chonker"]:before{background:var(--amber)}
+.slab[data-s="look"]:before{background:var(--red)}
+.slab[data-s="small"]:before{background:var(--cyan)}
+.eyebrow{font-size:10px;letter-spacing:.22em;color:var(--dim);text-transform:uppercase}
+#verdict{
+  font-family:var(--disp);font-weight:700;font-size:clamp(44px,15vw,72px);
+  line-height:.86;letter-spacing:.01em;margin:6px 0 2px;color:var(--dimmer);
+}
+.slab[data-s="chonker"] #verdict{color:var(--amber)}
+.slab[data-s="look"] #verdict{color:var(--red)}
+.slab[data-s="small"] #verdict{color:var(--cyan)}
+#tail{font-size:12px;color:var(--dim);letter-spacing:.1em;min-height:18px}
+#tail b{color:var(--ink);font-weight:600}
+
+/* to-scale front elevation — A380 vs 777-300ER */
+.silo{margin:10px -4px 0;display:block;width:100%;height:auto}
+.silo .body{fill:var(--dimmer);transition:fill .35s}
+.silo .lbl{font-family:var(--mono);font-size:9px;fill:var(--dimmer);letter-spacing:.1em}
+.silo g[data-on="1"] .body{fill:var(--amber)}
+.silo g[data-on="1"] .lbl{fill:var(--amber)}
+.silo g.g777[data-on="1"] .body{fill:var(--cyan)}
+.silo g.g777[data-on="1"] .lbl{fill:var(--cyan)}
+
+/* ── numbers ──────────────────────────────── */
+.rows{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule);border-radius:3px;overflow:hidden}
+.cell{background:var(--panel);padding:10px 12px}
+.cell .k{font-size:9px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+.cell .v{font-family:var(--disp);font-weight:700;font-size:27px;letter-spacing:.02em;line-height:1.1}
+.v.live{color:var(--magenta)}
+.v.sched{color:var(--dim)}
+
+/* progress rail */
+.rail{margin:14px 0 4px}
+.railbar{height:2px;background:var(--rule);position:relative;border-radius:2px}
+#flown{position:absolute;left:0;top:0;bottom:0;background:var(--magenta);border-radius:2px;width:0;transition:width .6s ease}
+#dot{position:absolute;top:-4px;width:10px;height:10px;margin-left:-5px;left:0;
+  background:var(--field);border:2px solid var(--magenta);border-radius:50%;transition:left .6s ease}
+.railends{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);letter-spacing:.14em;margin-top:7px}
+
+/* ── map ──────────────────────────────────── */
+#map{height:270px;margin:14px 0;border-radius:3px;background:var(--panel2);border:1px solid var(--rule)}
+.leaflet-container{background:var(--panel2);font-family:var(--mono)}
+.leaflet-control-attribution{background:rgba(11,16,23,.82)!important;color:var(--dimmer)!important;font-size:9px!important}
+.leaflet-control-attribution a{color:var(--dim)!important}
+.leaflet-bar a{background:var(--panel)!important;color:var(--ink)!important;border-color:var(--rule)!important}
+.plane{transform-origin:50% 50%}
+
+/* ── telemetry strip ──────────────────────── */
+.tele{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);border-radius:3px;overflow:hidden}
+.tele div{background:var(--panel);padding:8px 6px;text-align:center}
+.tele .k{font-size:8px;letter-spacing:.14em;color:var(--dim)}
+.tele .v{font-size:14px;font-weight:600;color:var(--ink);margin-top:1px}
+
+/* ── watch + link ─────────────────────────── */
+.watch{margin-top:14px;padding:11px 13px;background:var(--panel);border-radius:3px;border-left:3px solid var(--magenta)}
+.watch .k{font-size:9px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+#watchline{margin-top:3px;color:var(--ink);font-size:12px}
+#watchsub{color:var(--dim);font-size:11px}
+.esc{display:block;margin-top:14px;padding:13px;text-align:center;text-decoration:none;
+  border:1px solid var(--rule);border-radius:3px;color:var(--dim);
+  font-size:11px;letter-spacing:.16em;background:var(--panel)}
+.esc:active{border-color:var(--cyan);color:var(--cyan)}
+.foot{margin-top:12px;font-size:10px;color:var(--dimmer);text-align:center;line-height:1.6}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <span class="route">BA213<em>·</em>LHR<em>→</em>BOS</span>
+  <span class="spacer"></span>
+  <span id="stamp">——:——</span>
+  <button id="reload" type="button">SYNC</button>
+</div>
+
+<div class="slab" id="slab" data-s="idle">
+  <div class="eyebrow" id="eyebrow">Tonight's aircraft</div>
+  <div id="verdict">STANDBY</div>
+  <div id="tail">Waiting for a position report</div>
+
+  <svg class="silo" viewBox="0 0 320 178" aria-label="A380-800 and 777-300ER front elevations drawn to the same scale">
+    <!-- Front elevation, 3.6 px per metre.
+         A380-800:  79.8 m span, 24.1 m tall, double-deck oval section.
+         777-300ER: 64.8 m span, 18.5 m tall, circular section. -->
+    <g id="s388" data-on="0">
+      <g class="body">
+        <path d="M17 72 Q90 68 143 70 L177 70 Q230 68 303 72 L303 78 Q230 76 177 76 L143 76 Q90 76 17 78 Z"/>
+        <path d="M153 38 L160 4 L167 38 Z"/>
+        <path d="M136 42 L184 42 L180 48 L140 48 Z"/>
+        <ellipse cx="160" cy="59" rx="13" ry="17"/>
+        <rect x="63" y="76" width="16" height="10" rx="5"/>
+        <rect x="104" y="76" width="16" height="10" rx="5"/>
+        <rect x="200" y="76" width="16" height="10" rx="5"/>
+        <rect x="241" y="76" width="16" height="10" rx="5"/>
+      </g>
+      <text class="lbl" x="17" y="97">A388 &#183; 79.8 m &#183; 469 SEATS</text>
+    </g>
+    <g id="s77w" class="g777" data-on="0" transform="translate(0,84)">
+      <g class="body">
+        <path d="M44 62 Q105 59 148 61 L172 61 Q215 59 276 62 L276 67 Q215 65 172 65 L148 65 Q105 65 44 67 Z"/>
+        <path d="M155 34 L160 11 L165 34 Z"/>
+        <path d="M142 37 L178 37 L175 42 L145 42 Z"/>
+        <circle cx="160" cy="55" r="11"/>
+        <rect x="98" y="65" width="17" height="10" rx="5"/>
+        <rect x="205" y="65" width="17" height="10" rx="5"/>
+      </g>
+      <text class="lbl" x="17" y="86">B77W &#183; 64.8 m &#183; 297 SEATS</text>
+    </g>
+  </svg>
+</div>
+
+<div class="rows">
+  <div class="cell"><div class="k">Wheels down (live)</div><div class="v live" id="eta">——</div></div>
+  <div class="cell"><div class="k">Scheduled</div><div class="v sched" id="sched">——</div></div>
+</div>
+
+<div class="rail">
+  <div class="railbar"><div id="flown"></div><div id="dot"></div></div>
+  <div class="railends"><span>HEATHROW</span><span id="togo">—</span><span>LOGAN</span></div>
+</div>
+
+<div id="map"></div>
+
+<div class="tele">
+  <div><div class="k">ALT</div><div class="v" id="t-alt">—</div></div>
+  <div><div class="k">GND SPD</div><div class="v" id="t-gs">—</div></div>
+  <div><div class="k">TRACK</div><div class="v" id="t-trk">—</div></div>
+  <div><div class="k">V/S</div><div class="v" id="t-vs">—</div></div>
+</div>
+
+<div class="watch">
+  <div class="k">Chonker watch · G-XLEB</div>
+  <div id="watchline">Checking…</div>
+  <div id="watchsub"></div>
+</div>
+
+<a class="esc" id="esc" href="https://globe.adsb.fi/?callsign=BAW213" target="_blank" rel="noopener">OPEN FULL MAP — ADSB.FI ↗</a>
+
+<p class="foot">
+  Live ADS-B via adsb.fi, falling back to adsb.lol.<br>
+  Community receivers are land-based, so expect a mid-Atlantic gap.
+</p>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ══ constants ══════════════════════════════════════════════ */
+var BOS   = {lat:42.3656, lon:-71.0096, name:"Logan"};
+var LHR   = {lat:51.4700, lon:-0.4543};
+var FAV   = "G-XLEB";                 // the sentimental airframe
+var CALL  = "BAW213";
+var R_NM  = 3440.065;
+var GC_TOTAL = null;                  // LHR→BOS great circle, computed once
+
+var SRC = {
+  call: ["https://opendata.adsb.fi/api/v2/callsign/"+CALL,
+         "https://api.adsb.lol/v2/callsign/"+CALL],
+  reg:  ["https://opendata.adsb.fi/api/v2/registration/"+FAV,
+         "https://api.adsb.lol/v2/reg/"+FAV]
+};
+
+/* ══ geo ════════════════════════════════════════════════════ */
+function rad(d){return d*Math.PI/180}
+function gcNm(a,b){
+  var dLat=rad(b.lat-a.lat), dLon=rad(b.lon-a.lon);
+  var h=Math.sin(dLat/2)*Math.sin(dLat/2)
+      + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return 2*R_NM*Math.asin(Math.min(1,Math.sqrt(h)));
+}
+GC_TOTAL = gcNm(LHR,BOS);
+
+/* ══ time ═══════════════════════════════════════════════════ */
+/* Wall-clock time in a named zone → UTC instant, DST-safe. */
+function zoned(y,m,d,hh,mm,tz){
+  var guess=Date.UTC(y,m-1,d,hh,mm);
+  for(var i=0;i<3;i++){
+    var p=new Intl.DateTimeFormat("en-US",{timeZone:tz,hour12:false,
+      year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})
+      .formatToParts(new Date(guess)).reduce(function(o,x){o[x.type]=x.value;return o},{});
+    var asUTC=Date.UTC(+p.year,+p.month-1,+p.day,+(p.hour%24),+p.minute);
+    var err=asUTC-Date.UTC(y,m-1,d,hh,mm);
+    if(!err) break;
+    guess-=err;
+  }
+  return new Date(guess);
+}
+function bosParts(dt){
+  var p=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",
+    year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(dt)
+    .reduce(function(o,x){o[x.type]=x.value;return o},{});
+  return {y:+p.year,m:+p.month,d:+p.day};
+}
+function clock(dt){
+  return new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",
+    hour:"numeric",minute:"2-digit",hour12:true}).format(dt)
+    .replace(" AM","a").replace(" PM","p").replace(/\u202f/g,"");
+}
+/* Today's scheduled window, anchored to Boston's calendar date. */
+function window_(){
+  var t=bosParts(new Date());
+  return {
+    dep: zoned(t.y,t.m,t.d,14,30,"Europe/London"),
+    arr: zoned(t.y,t.m,t.d,17,0,"America/New_York")
+  };
+}
+
+/* ══ fetch ══════════════════════════════════════════════════ */
+function grab(urls){
+  var i=0;
+  function next(){
+    if(i>=urls.length) return Promise.resolve(null);
+    var u=urls[i++];
+    return fetch(u,{cache:"no-store"})
+      .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(j){ return (j&&j.ac&&j.ac.length)?j.ac[0]:null; })
+      .catch(next);
+  }
+  return next();
+}
+
+/* ══ map ════════════════════════════════════════════════════ */
+var map,marker,trail,gcline;
+function initMap(){
+  map=L.map("map",{zoomControl:true,attributionControl:true,tap:false})
+       .setView([48,-35],3);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
+    attribution:'&copy; OpenStreetMap &middot; CARTO', subdomains:"abcd", maxZoom:11
+  }).addTo(map);
+  L.circleMarker([BOS.lat,BOS.lon],{radius:4,color:"#5CC8FF",weight:2,fillOpacity:.9})
+   .addTo(map).bindTooltip("Logan");
+  trail=L.polyline([],{color:"#E552FF",weight:2,opacity:.85}).addTo(map);
+}
+function planeIcon(trk){
+  return L.divIcon({className:"",iconSize:[30,30],iconAnchor:[15,15],
+    html:'<svg class="plane" width="30" height="30" viewBox="0 0 24 24" '
+       + 'style="transform:rotate('+(trk||0)+'deg)"><path fill="#E552FF" '
+       + 'd="M12 2 L13.4 9.2 L22 12.6 L22 14 L13.4 12.4 L13.4 18.6 L16 21 L16 22 '
+       + 'L12 20.6 L8 22 L8 21 L10.6 18.6 L10.6 12.4 L2 14 L2 12.6 L10.6 9.2 Z"/></svg>'});
+}
+function place(ac){
+  var ll=[ac.lat,ac.lon];
+  if(!marker){ marker=L.marker(ll,{icon:planeIcon(ac.track)}).addTo(map); }
+  else { marker.setLatLng(ll); marker.setIcon(planeIcon(ac.track)); }
+  trail.addLatLng(ll);
+  if(gcline) map.removeLayer(gcline);
+  gcline=L.polyline([ll,[BOS.lat,BOS.lon]],
+    {color:"#5CC8FF",weight:1,opacity:.4,dashArray:"3 5"}).addTo(map);
+  map.fitBounds(L.latLngBounds([ll,[BOS.lat,BOS.lon]]).pad(.35),{maxZoom:7});
+}
+
+/* ══ render ═════════════════════════════════════════════════ */
+var $=function(id){return document.getElementById(id)};
+
+function silhouette(kind){
+  $("s388").setAttribute("data-on", kind==="A388"?"1":"0");
+  $("s77w").setAttribute("data-on", kind==="B77W"?"1":"0");
+}
+function slab(state,big,sub,eyebrow){
+  $("slab").setAttribute("data-s",state);
+  $("verdict").textContent=big;
+  $("tail").innerHTML=sub;
+  $("eyebrow").textContent=eyebrow;
+}
+function tele(a,g,t,v){
+  $("t-alt").textContent=a; $("t-gs").textContent=g;
+  $("t-trk").textContent=t; $("t-vs").textContent=v;
+}
+function progress(pct,togo){
+  pct=Math.max(0,Math.min(100,pct));
+  $("flown").style.width=pct+"%";
+  $("dot").style.left=pct+"%";
+  $("togo").textContent=togo;
+}
+
+function paint(ac,fav){
+  var w=window_(), now=new Date();
+  $("sched").textContent=clock(w.arr);
+
+  /* ── the favourite airframe, wherever it is ── */
+  if(fav){
+    var onBos = fav.flight && fav.flight.trim()===CALL;
+    $("watchline").textContent = onBos
+      ? "Inbound Boston — this is your plane tonight."
+      : "Airborne as "+(fav.flight?fav.flight.trim():"—")+", not the Boston run.";
+    $("watchsub").textContent = Math.round(fav.alt_baro||0).toLocaleString()+" ft · "
+      + fav.lat.toFixed(2)+"°, "+fav.lon.toFixed(2)+"° · "+Math.round(fav.gs||0)+" kt";
+  } else {
+    $("watchline").textContent="On the ground somewhere.";
+    $("watchsub").textContent="No position report for "+FAV+".";
+  }
+
+  /* ── no BA213 in the feed ── */
+  if(!ac){
+    tele("—","—","—","—");
+    if(now<w.dep){
+      slab("idle","STANDBY",
+        "Pushes back around <b>"+clock(w.dep)+"</b> Boston time.",
+        "Not yet departed");
+      progress(0,"—"); silhouette(null);
+    } else if(now < new Date(w.dep.getTime()+35*60000)){
+      slab("idle","ON STAND",
+        "Scheduled out at <b>"+clock(w.dep)+"</b>. Nothing transmitting yet — "
+        + "the callsign usually appears a few minutes after wheels-up.",
+        "Taxiing at Heathrow");
+      progress(0,"—"); silhouette(null);
+    } else if(now<w.arr){
+      slab("idle","OUT OF RANGE",
+        "Airborne, but between receivers. Ocean coverage is thin — try again shortly.",
+        "Mid-Atlantic gap");
+      silhouette(null);
+    } else {
+      slab("idle","DOWN",
+        "Scheduled arrival <b>"+clock(w.arr)+"</b> has passed.",
+        "Today's run is over");
+      progress(100,"0 nm"); silhouette(null);
+    }
+    return;
+  }
+
+  /* ── live ── */
+  var type=(ac.t||"").toUpperCase();
+  var chonk = type==="A388";
+  var togo  = gcNm({lat:ac.lat,lon:ac.lon},BOS);
+  var gs    = ac.gs||0;
+  var vs    = ac.baro_rate;
+  var alt   = ac.alt_baro;
+  if(alt==="ground") alt=0;
+
+  var etaTxt="——";
+  if(gs>60){
+    var mins=(togo/gs)*60;
+    etaTxt=clock(new Date(now.getTime()+mins*60000));
+  }
+  $("eta").textContent=etaTxt;
+
+  progress(100*(1-togo/GC_TOTAL), Math.round(togo).toLocaleString()+" nm to run");
+  tele(
+    alt===0?"GND":Math.round(alt).toLocaleString(),
+    Math.round(gs)+" kt",
+    Math.round(ac.track||0)+"°",
+    (vs==null?"—":(vs>0?"+":"")+Math.round(vs))
+  );
+  silhouette(chonk?"A388":(type?"B77W":null));
+  place(ac);
+
+  var reg = ac.r ? ac.r.trim() : "unknown tail";
+  var isFav = reg===FAV;
+  var descending = vs!=null && vs<-300;
+  var close = togo<90;
+
+  if(chonk && descending && close){
+    slab("look","LOOK UP",
+      "Descending through <b>"+Math.round(alt).toLocaleString()+" ft</b>, "
+      + Math.round(togo)+" nm out. Go outside.",
+      "On approach to Logan");
+  } else if(chonk){
+    slab("chonker","CHONKER",
+      "<b>"+reg+"</b> · Airbus A380-800"+(isFav?" — your one.":""),
+      "Tonight's aircraft");
+  } else {
+    slab("small", type||"UNKNOWN",
+      "<b>"+reg+"</b> · not the double-decker tonight.",
+      "Tonight's aircraft");
+  }
+}
+
+/* ══ cycle ══════════════════════════════════════════════════ */
+var busy=false;
+function sync(){
+  if(busy) return;
+  busy=true; $("reload").setAttribute("data-busy","1");
+  Promise.all([grab(SRC.call),grab(SRC.reg)])
+    .then(function(r){
+      paint(r[0],r[1]);
+      $("stamp").textContent="SYNC "+clock(new Date());
+    })
+    .catch(function(){ $("stamp").textContent="SYNC FAILED"; })
+    .then(function(){ busy=false; $("reload").removeAttribute("data-busy"); });
+}
+
+initMap();
+sync();
+setInterval(function(){ if(!document.hidden) sync(); },20000);
+document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
+$("reload").addEventListener("click",sync);
+
+})();
+</script>
+</body>
+</html>
