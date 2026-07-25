@@ -325,6 +325,11 @@ function tele(a,g,t,v){
   $("t-alt").textContent=a; $("t-gs").textContent=g;
   $("t-trk").textContent=t; $("t-vs").textContent=v;
 }
+function resetEta(){
+  $("etak").textContent="Wheels down (scheduled)";
+  $("eta").className="v sched";
+  $("eta").textContent=clock(window_().arr);
+}
 function progress(pct,togo){
   pct=Math.max(0,Math.min(100,pct));
   $("flown").style.width=pct+"%"; $("dot").style.left=pct+"%";
@@ -407,15 +412,23 @@ function paint(res,favRes){
   $("sched").textContent=clock(w.arr);
   paintFav(favRes);
 
-  /* feed itself is unreachable */
+  /* feed unreachable — ride it out on the cache, and don't panic on one miss */
   if(!res.ok){
-    tele("—","—","—","—");
+    misses++;
+    if(LAST && (Date.now()-LAST.t)<STALE){
+      paintLive(LAST.ac, ago(Date.now()-LAST.t));
+      $("stamp").textContent="RETRYING";
+      return;
+    }
+    if(misses<3){ $("stamp").textContent="RETRYING"; return; }
+    tele("—","—","—","—"); resetEta();
     slab("look","FEED DOWN",
-      "Can't reach airplanes.live. That's the data source, not the aircraft — "
-      +"nothing is known about BA213 right now.", "No connection");
+      "Can't reach airplanes.live after "+misses+" tries. That's the data source, "
+      +"not the aircraft — nothing is known about BA213 right now.", "No connection");
     silhouette(null);
     return;
   }
+  misses=0;
 
   if(res.ac){ remember(res.ac); paintLive(res.ac,null); return; }
 
@@ -425,7 +438,7 @@ function paint(res,favRes){
     return;
   }
 
-  tele("—","—","—","—"); silhouette(null);
+  tele("—","—","—","—"); silhouette(null); resetEta();
   if(now<w.dep){
     slab("idle","STANDBY","Scheduled out at <b>"+clock(w.dep)+"</b> Boston time.",
       "Not yet departed");
@@ -447,7 +460,7 @@ function paint(res,favRes){
 }
 
 /* ══ cycle ══════════════════════════════════════════════════ */
-var busy=false;
+var busy=false, misses=0;
 function sync(){
   if(busy) return;
   busy=true; $("reload").setAttribute("data-busy","1");
@@ -461,7 +474,8 @@ function sync(){
 }
 
 initMap(); sync();
-setInterval(function(){ if(!document.hidden) sync(); },20000);
+setInterval(function(){ if(!document.hidden) sync(); }, misses?6000:20000);
+setInterval(function(){ if(!document.hidden && misses) sync(); },6000);
 document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
 $("reload").addEventListener("click",sync);
 
