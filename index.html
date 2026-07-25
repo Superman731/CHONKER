@@ -209,9 +209,13 @@ var STALE = 30*60000;          // how long a last-known reading stays useful
 
 /* airplanes.live is the only community feed that sends
    access-control-allow-origin, so it's the only one a browser can read. */
+function relay(u){ return "https://corsproxy.io/?url="+encodeURIComponent(u); }
 var SRC = {
-  call: ["https://api.airplanes.live/v2/callsign/"+CALL],
-  reg:  ["https://api.airplanes.live/v2/reg/"+FAV]
+  call: ["https://api.airplanes.live/v2/callsign/"+CALL,
+         relay("https://opendata.adsb.fi/api/v2/callsign/"+CALL),
+         relay("https://api.adsb.lol/v2/callsign/"+CALL)],
+  reg:  ["https://api.airplanes.live/v2/reg/"+FAV,
+         relay("https://opendata.adsb.fi/api/v2/registration/"+FAV)]
 };
 
 /* ══ geo ════════════════════════════════════════════════════ */
