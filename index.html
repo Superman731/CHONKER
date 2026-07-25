@@ -188,7 +188,7 @@ body{
 <a class="esc" id="esc" href="https://globe.adsb.fi/?icao=40688b" target="_blank" rel="noopener">OPEN FULL MAP — ADSB.FI ↗</a>
 
 <p class="foot">
-  Live ADS-B via airplanes.live &mdash; the community feed that allows browser access.<br>
+  Live ADS-B via airplanes.live &mdash; polled once every 30s, within their 1 req/sec limit.<br>
   Community receivers are land-based, so expect a mid-Atlantic gap.
 </p>
 
@@ -459,23 +459,46 @@ function paint(res,favRes){
   }
 }
 
-/* ══ cycle ══════════════════════════════════════════════════ */
-var busy=false, misses=0;
+/* ══ cycle ═══════════════════════════════════════════════════
+   airplanes.live allows 1 request/second. So: never two at once,
+   the favourite airframe only every 3rd pass, and back OFF on failure. */
+var busy=false, misses=0, cycle=0, timer=null, delay=30000;
+var favCache={ok:true,ac:null};
+function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
+
 function sync(){
   if(busy) return;
   busy=true; $("reload").setAttribute("data-busy","1");
-  Promise.all([grab(SRC.call),grab(SRC.reg)])
+  var main=null;
+  grab(SRC.call)
     .then(function(r){
-      paint(r[0],r[1]);
-      $("stamp").textContent="SYNC "+clock(new Date());
+      main=r;
+      if(cycle%3!==0) return null;              // reg lookup only 1 pass in 3
+      return sleep(1300).then(function(){       // and never inside the same second
+        return grab(SRC.reg);
+      }).then(function(f){ if(f && f.ok) favCache=f; });
     })
-    .then(function(){ busy=false; $("reload").removeAttribute("data-busy"); },
-          function(){ busy=false; $("reload").removeAttribute("data-busy"); });
+    .then(function(){
+      cycle++;
+      paint(main,favCache);
+      if(main && main.ok){
+        $("stamp").textContent="SYNC "+clock(new Date());
+        delay=30000;                            // healthy — back to normal cadence
+      } else {
+        delay=Math.min(Math.round(delay*1.6),120000);   // throttled — slow down
+      }
+    })
+    .then(done,done);
+  function done(){
+    busy=false; $("reload").removeAttribute("data-busy"); schedule();
+  }
+}
+function schedule(){
+  clearTimeout(timer);
+  timer=setTimeout(function(){ if(!document.hidden) sync(); else schedule(); }, delay);
 }
 
 initMap(); sync();
-setInterval(function(){ if(!document.hidden) sync(); }, misses?6000:20000);
-setInterval(function(){ if(!document.hidden && misses) sync(); },6000);
 document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
 $("reload").addEventListener("click",sync);
 
