@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="Chonker">
 <meta name="theme-color" content="#0B1017">
 <link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -368,8 +369,10 @@ function paintFav(res){
     ? "This is your plane tonight — inbound Boston."
     : (onGnd ? "On the ground as "+((f.flight||"").trim()||"—")+"."
              : "Airborne as "+((f.flight||"").trim()||"—")+", not the Boston run.");
+  var hasPos = (typeof f.lat==="number" && typeof f.lon==="number");
   $("watchsub").textContent = (onGnd?"Ground":Math.round(f.alt_baro||0).toLocaleString()+" ft")
-    + " · "+f.lat.toFixed(2)+"°, "+f.lon.toFixed(2)+"° · "+Math.round(f.gs||0)+" kt";
+    + (hasPos ? " \u00b7 "+f.lat.toFixed(2)+"\u00b0, "+f.lon.toFixed(2)+"\u00b0" : " \u00b7 parked, position not broadcasting")
+    + " \u00b7 "+Math.round(f.gs||0)+" kt";
 }
 
 function paintLive(ac,stale){
@@ -380,10 +383,11 @@ function paintLive(ac,stale){
   var alt=onGnd?0:ac.alt_baro;
   var gs=ac.gs||0, vs=ac.baro_rate;
   var trk=(ac.track!=null?ac.track:ac.true_heading)||0;
-  var togo=gcNm({lat:ac.lat,lon:ac.lon},BOS);
+  var hasPos=(typeof ac.lat==="number" && typeof ac.lon==="number");
+  var togo=hasPos?gcNm({lat:ac.lat,lon:ac.lon},BOS):null;
   var reg=ac.r?ac.r.trim():"unknown tail";
 
-  var cruising = !onGnd && alt>15000 && gs>250;
+  var cruising = hasPos && !onGnd && alt>15000 && gs>250;
   if(cruising){
     $("etak").textContent="Wheels down (live)";
     $("eta").textContent=clock(new Date(now.getTime()+(togo/gs)*3600000));
@@ -394,12 +398,12 @@ function paintLive(ac,stale){
     $("eta").className="v sched";
   }
   if(ac.hex) $("esc").href="https://globe.adsb.fi/?icao="+ac.hex;
-  progress(100*(1-togo/GC_TOTAL), Math.round(togo).toLocaleString()+" nm to run");
+  if(hasPos) progress(100*(1-togo/GC_TOTAL), Math.round(togo).toLocaleString()+" nm to run");
   tele(onGnd?"GND":Math.round(alt).toLocaleString(),
        Math.round(gs)+" kt", Math.round(trk)+"°",
        (vs==null?"—":(vs>0?"+":"")+Math.round(vs)));
   silhouette(chonk?"A388":(type?"B77W":null));
-  place(ac,stale);
+  if(hasPos) place(ac,stale);
 
   var note = stale ? " <span style=\"color:#7C8B99\">(last seen "+stale+")</span>" : "";
 
@@ -407,7 +411,7 @@ function paintLive(ac,stale){
     slab(chonk?"chonker":"small", chonk?"CHONKER":(type||"UNKNOWN"),
       "<b>"+reg+"</b> · "+(chonk?"A380-800":type)+" — still on the ground at Heathrow."+note,
       chonk?"Confirmed for tonight":"Tonight's aircraft");
-  } else if(chonk && vs!=null && vs<-300 && togo<90){
+  } else if(chonk && hasPos && vs!=null && vs<-300 && togo<90){
     slab("look","LOOK UP",
       "Descending through <b>"+Math.round(alt).toLocaleString()+" ft</b>, "
       +Math.round(togo)+" nm out. Go outside."+note, "On approach to Logan");
@@ -510,7 +514,7 @@ function sync(){
         delay=Math.min(Math.round(delay*1.6),120000);   // throttled — slow down
       }
     })
-    .then(done,done);
+    .then(done,function(e){ try{console.error("CHONKER paint error:",e);}catch(_){} done(); });
   function done(){
     clearTimeout(watchdog);
     busy=false; $("reload").removeAttribute("data-busy"); schedule();
