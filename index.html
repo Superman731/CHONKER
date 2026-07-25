@@ -192,7 +192,9 @@ body{
   Community receivers are land-based, so expect a mid-Atlantic gap.
 </p>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';document.head.appendChild(s);
+  var c=document.createElement('link');c.rel='stylesheet';c.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';document.head.appendChild(c);"></script>
 <script>
 (function(){
 "use strict";
@@ -282,6 +284,10 @@ function grab(urls){
 
 /* ══ map ════════════════════════════════════════════════════ */
 var map,marker,trail,gcline;
+function tryMap(){
+  if(map || !window.L) return;          // not loaded yet — try again next sync
+  try{ initMap(); }catch(e){ map=null; }
+}
 function initMap(){
   map=L.map("map",{zoomControl:true,attributionControl:true,tap:false})
        .setView([48,-35],3);
@@ -300,6 +306,8 @@ function planeIcon(trk,dim){
        + 'L12 20.6 L8 22 L8 21 L10.6 18.6 L10.6 12.4 L2 14 L2 12.6 L10.6 9.2 Z"/></svg>'});
 }
 function place(ac,dim){
+  tryMap();
+  if(!map) return;                      // no map library — skip the map, keep the data
   var ll=[ac.lat,ac.lon];
   var trk=(ac.track!=null?ac.track:ac.true_heading)||0;
   if(!marker){ marker=L.marker(ll,{icon:planeIcon(trk,dim)}).addTo(map); }
@@ -509,7 +517,7 @@ function schedule(){
   timer=setTimeout(function(){ if(!document.hidden) sync(); else schedule(); }, delay);
 }
 
-initMap(); sync();
+tryMap(); sync();
 document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
 $("reload").addEventListener("click",sync);
 
