@@ -188,7 +188,7 @@ body{
 <a class="esc" id="esc" href="https://globe.adsb.fi/?callsign=BAW213" target="_blank" rel="noopener">OPEN FULL MAP — ADSB.FI ↗</a>
 
 <p class="foot">
-  Live ADS-B via adsb.fi, falling back to adsb.lol.<br>
+  Live ADS-B via airplanes.live &mdash; the community feed that allows browser access.<br>
   Community receivers are land-based, so expect a mid-Atlantic gap.
 </p>
 
@@ -198,18 +198,18 @@ body{
 "use strict";
 
 /* ══ constants ══════════════════════════════════════════════ */
-var BOS   = {lat:42.3656, lon:-71.0096, name:"Logan"};
+var BOS   = {lat:42.3656, lon:-71.0096};
 var LHR   = {lat:51.4700, lon:-0.4543};
-var FAV   = "G-XLEB";                 // the sentimental airframe
+var FAV   = "G-XLEB";
 var CALL  = "BAW213";
 var R_NM  = 3440.065;
-var GC_TOTAL = null;                  // LHR→BOS great circle, computed once
+var STALE = 30*60000;          // how long a last-known reading stays useful
 
+/* airplanes.live is the only community feed that sends
+   access-control-allow-origin, so it's the only one a browser can read. */
 var SRC = {
-  call: ["https://opendata.adsb.fi/api/v2/callsign/"+CALL,
-         "https://api.adsb.lol/v2/callsign/"+CALL],
-  reg:  ["https://opendata.adsb.fi/api/v2/registration/"+FAV,
-         "https://api.adsb.lol/v2/reg/"+FAV]
+  call: ["https://api.airplanes.live/v2/callsign/"+CALL],
+  reg:  ["https://api.airplanes.live/v2/reg/"+FAV]
 };
 
 /* ══ geo ════════════════════════════════════════════════════ */
@@ -220,10 +220,9 @@ function gcNm(a,b){
       + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)*Math.sin(dLon/2);
   return 2*R_NM*Math.asin(Math.min(1,Math.sqrt(h)));
 }
-GC_TOTAL = gcNm(LHR,BOS);
+var GC_TOTAL = gcNm(LHR,BOS);
 
 /* ══ time ═══════════════════════════════════════════════════ */
-/* Wall-clock time in a named zone → UTC instant, DST-safe. */
 function zoned(y,m,d,hh,mm,tz){
   var guess=Date.UTC(y,m-1,d,hh,mm);
   for(var i=0;i<3;i++){
@@ -237,38 +236,46 @@ function zoned(y,m,d,hh,mm,tz){
   }
   return new Date(guess);
 }
-function bosParts(dt){
-  var p=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",
-    year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(dt)
-    .reduce(function(o,x){o[x.type]=x.value;return o},{});
-  return {y:+p.year,m:+p.month,d:+p.day};
-}
 function clock(dt){
   return new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",
     hour:"numeric",minute:"2-digit",hour12:true}).format(dt)
     .replace(" AM","a").replace(" PM","p").replace(/\u202f/g,"");
 }
-/* Today's scheduled window, anchored to Boston's calendar date. */
 function window_(){
-  var t=bosParts(new Date());
+  var p=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",
+    year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date())
+    .reduce(function(o,x){o[x.type]=x.value;return o},{});
   return {
-    dep: zoned(t.y,t.m,t.d,14,30,"Europe/London"),
-    arr: zoned(t.y,t.m,t.d,17,0,"America/New_York")
+    dep: zoned(+p.year,+p.month,+p.day,14,30,"Europe/London"),
+    arr: zoned(+p.year,+p.month,+p.day,17,0,"America/New_York")
   };
 }
+function ago(ms){
+  var m=Math.round(ms/60000);
+  if(m<1) return "seconds ago";
+  return m+(m===1?" min ago":" min ago");
+}
 
-/* ══ fetch ══════════════════════════════════════════════════ */
+/* ══ last-known cache (survives closing the app) ════════════ */
+var LAST=null;
+try{ var s=localStorage.getItem("chonker.last"); if(s) LAST=JSON.parse(s); }catch(e){}
+function remember(ac){
+  LAST={t:Date.now(),ac:ac};
+  try{ localStorage.setItem("chonker.last",JSON.stringify(LAST)); }catch(e){}
+}
+
+/* ══ fetch — distinguishes "feed unreachable" from "no aircraft" ══ */
 function grab(urls){
   var i=0;
-  function next(){
-    if(i>=urls.length) return Promise.resolve(null);
+  function go(){
+    if(i>=urls.length) return {ok:false};
     var u=urls[i++];
     return fetch(u,{cache:"no-store"})
       .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function(j){ return (j&&j.ac&&j.ac.length)?j.ac[0]:null; })
-      .catch(next);
+      .then(function(j){ return {ok:true, ac:(j&&j.ac&&j.ac.length)?j.ac[0]:null}; })
+      .catch(go);
   }
-  return next();
+  return Promise.resolve().then(go);
 }
 
 /* ══ map ════════════════════════════════════════════════════ */
@@ -283,27 +290,27 @@ function initMap(){
    .addTo(map).bindTooltip("Logan");
   trail=L.polyline([],{color:"#E552FF",weight:2,opacity:.85}).addTo(map);
 }
-function planeIcon(trk){
+function planeIcon(trk,dim){
   return L.divIcon({className:"",iconSize:[30,30],iconAnchor:[15,15],
     html:'<svg class="plane" width="30" height="30" viewBox="0 0 24 24" '
-       + 'style="transform:rotate('+(trk||0)+'deg)"><path fill="#E552FF" '
+       + 'style="transform:rotate('+(trk||0)+'deg);opacity:'+(dim?.45:1)+'"><path fill="#E552FF" '
        + 'd="M12 2 L13.4 9.2 L22 12.6 L22 14 L13.4 12.4 L13.4 18.6 L16 21 L16 22 '
        + 'L12 20.6 L8 22 L8 21 L10.6 18.6 L10.6 12.4 L2 14 L2 12.6 L10.6 9.2 Z"/></svg>'});
 }
-function place(ac){
+function place(ac,dim){
   var ll=[ac.lat,ac.lon];
-  if(!marker){ marker=L.marker(ll,{icon:planeIcon(ac.track)}).addTo(map); }
-  else { marker.setLatLng(ll); marker.setIcon(planeIcon(ac.track)); }
-  trail.addLatLng(ll);
+  var trk=(ac.track!=null?ac.track:ac.true_heading)||0;
+  if(!marker){ marker=L.marker(ll,{icon:planeIcon(trk,dim)}).addTo(map); }
+  else { marker.setLatLng(ll); marker.setIcon(planeIcon(trk,dim)); }
+  if(!dim) trail.addLatLng(ll);
   if(gcline) map.removeLayer(gcline);
   gcline=L.polyline([ll,[BOS.lat,BOS.lon]],
     {color:"#5CC8FF",weight:1,opacity:.4,dashArray:"3 5"}).addTo(map);
-  map.fitBounds(L.latLngBounds([ll,[BOS.lat,BOS.lon]]).pad(.35),{maxZoom:7});
+  map.fitBounds(L.latLngBounds([ll,[BOS.lat,BOS.lon]]).pad(.35),{maxZoom:8});
 }
 
-/* ══ render ═════════════════════════════════════════════════ */
+/* ══ render helpers ═════════════════════════════════════════ */
 var $=function(id){return document.getElementById(id)};
-
 function silhouette(kind){
   $("s388").setAttribute("data-on", kind==="A388"?"1":"0");
   $("s77w").setAttribute("data-on", kind==="B77W"?"1":"0");
@@ -320,100 +327,113 @@ function tele(a,g,t,v){
 }
 function progress(pct,togo){
   pct=Math.max(0,Math.min(100,pct));
-  $("flown").style.width=pct+"%";
-  $("dot").style.left=pct+"%";
+  $("flown").style.width=pct+"%"; $("dot").style.left=pct+"%";
   $("togo").textContent=togo;
 }
 
-function paint(ac,fav){
-  var w=window_(), now=new Date();
-  $("sched").textContent=clock(w.arr);
-
-  /* ── the favourite airframe, wherever it is ── */
-  if(fav){
-    var onBos = fav.flight && fav.flight.trim()===CALL;
-    $("watchline").textContent = onBos
-      ? "Inbound Boston — this is your plane tonight."
-      : "Airborne as "+(fav.flight?fav.flight.trim():"—")+", not the Boston run.";
-    $("watchsub").textContent = Math.round(fav.alt_baro||0).toLocaleString()+" ft · "
-      + fav.lat.toFixed(2)+"°, "+fav.lon.toFixed(2)+"° · "+Math.round(fav.gs||0)+" kt";
-  } else {
-    $("watchline").textContent="On the ground somewhere.";
-    $("watchsub").textContent="No position report for "+FAV+".";
+/* ══ paint ══════════════════════════════════════════════════ */
+function paintFav(res){
+  if(!res.ok){
+    $("watchline").textContent="Feed unreachable.";
+    $("watchsub").textContent=""; return;
   }
-
-  /* ── no BA213 in the feed ── */
-  if(!ac){
-    tele("—","—","—","—");
-    if(now<w.dep){
-      slab("idle","STANDBY",
-        "Pushes back around <b>"+clock(w.dep)+"</b> Boston time.",
-        "Not yet departed");
-      progress(0,"—"); silhouette(null);
-    } else if(now < new Date(w.dep.getTime()+35*60000)){
-      slab("idle","ON STAND",
-        "Scheduled out at <b>"+clock(w.dep)+"</b>. Nothing transmitting yet — "
-        + "the callsign usually appears a few minutes after wheels-up.",
-        "Taxiing at Heathrow");
-      progress(0,"—"); silhouette(null);
-    } else if(now<w.arr){
-      slab("idle","OUT OF RANGE",
-        "Airborne, but between receivers. Ocean coverage is thin — try again shortly.",
-        "Mid-Atlantic gap");
-      silhouette(null);
-    } else {
-      slab("idle","DOWN",
-        "Scheduled arrival <b>"+clock(w.arr)+"</b> has passed.",
-        "Today's run is over");
-      progress(100,"0 nm"); silhouette(null);
-    }
+  var f=res.ac;
+  if(!f){
+    $("watchline").textContent="No position report.";
+    $("watchsub").textContent=FAV+" is parked out of receiver range.";
     return;
   }
+  var onGnd = f.alt_baro==="ground";
+  var isBos = f.flight && f.flight.trim()===CALL;
+  $("watchline").textContent = isBos
+    ? "This is your plane tonight — inbound Boston."
+    : (onGnd ? "On the ground as "+((f.flight||"").trim()||"—")+"."
+             : "Airborne as "+((f.flight||"").trim()||"—")+", not the Boston run.");
+  $("watchsub").textContent = (onGnd?"Ground":Math.round(f.alt_baro||0).toLocaleString()+" ft")
+    + " · "+f.lat.toFixed(2)+"°, "+f.lon.toFixed(2)+"° · "+Math.round(f.gs||0)+" kt";
+}
 
-  /* ── live ── */
+function paintLive(ac,stale){
+  var now=new Date();
   var type=(ac.t||"").toUpperCase();
-  var chonk = type==="A388";
-  var togo  = gcNm({lat:ac.lat,lon:ac.lon},BOS);
-  var gs    = ac.gs||0;
-  var vs    = ac.baro_rate;
-  var alt   = ac.alt_baro;
-  if(alt==="ground") alt=0;
+  var chonk=type==="A388";
+  var onGnd=ac.alt_baro==="ground";
+  var alt=onGnd?0:ac.alt_baro;
+  var gs=ac.gs||0, vs=ac.baro_rate;
+  var trk=(ac.track!=null?ac.track:ac.true_heading)||0;
+  var togo=gcNm({lat:ac.lat,lon:ac.lon},BOS);
+  var reg=ac.r?ac.r.trim():"unknown tail";
 
-  var etaTxt="——";
-  if(gs>60){
-    var mins=(togo/gs)*60;
-    etaTxt=clock(new Date(now.getTime()+mins*60000));
-  }
-  $("eta").textContent=etaTxt;
-
+  $("eta").textContent = (!onGnd && gs>60)
+    ? clock(new Date(now.getTime()+(togo/gs)*3600000)) : "——";
   progress(100*(1-togo/GC_TOTAL), Math.round(togo).toLocaleString()+" nm to run");
-  tele(
-    alt===0?"GND":Math.round(alt).toLocaleString(),
-    Math.round(gs)+" kt",
-    Math.round(ac.track||0)+"°",
-    (vs==null?"—":(vs>0?"+":"")+Math.round(vs))
-  );
+  tele(onGnd?"GND":Math.round(alt).toLocaleString(),
+       Math.round(gs)+" kt", Math.round(trk)+"°",
+       (vs==null?"—":(vs>0?"+":"")+Math.round(vs)));
   silhouette(chonk?"A388":(type?"B77W":null));
-  place(ac);
+  place(ac,stale);
 
-  var reg = ac.r ? ac.r.trim() : "unknown tail";
-  var isFav = reg===FAV;
-  var descending = vs!=null && vs<-300;
-  var close = togo<90;
+  var note = stale ? " <span style=\"color:#7C8B99\">(last seen "+stale+")</span>" : "";
 
-  if(chonk && descending && close){
+  if(onGnd){
+    slab(chonk?"chonker":"small", chonk?"CHONKER":(type||"UNKNOWN"),
+      "<b>"+reg+"</b> · "+(chonk?"A380-800":type)+" — still on the ground at Heathrow."+note,
+      chonk?"Confirmed for tonight":"Tonight's aircraft");
+  } else if(chonk && vs!=null && vs<-300 && togo<90){
     slab("look","LOOK UP",
       "Descending through <b>"+Math.round(alt).toLocaleString()+" ft</b>, "
-      + Math.round(togo)+" nm out. Go outside.",
-      "On approach to Logan");
+      +Math.round(togo)+" nm out. Go outside."+note, "On approach to Logan");
   } else if(chonk){
     slab("chonker","CHONKER",
-      "<b>"+reg+"</b> · Airbus A380-800"+(isFav?" — your one.":""),
+      "<b>"+reg+"</b> · Airbus A380-800"+(reg===FAV?" — your one.":"")+note,
       "Tonight's aircraft");
   } else {
     slab("small", type||"UNKNOWN",
-      "<b>"+reg+"</b> · not the double-decker tonight.",
-      "Tonight's aircraft");
+      "<b>"+reg+"</b> · not the double-decker tonight."+note, "Tonight's aircraft");
+  }
+}
+
+function paint(res,favRes){
+  var w=window_(), now=new Date();
+  $("sched").textContent=clock(w.arr);
+  paintFav(favRes);
+
+  /* feed itself is unreachable */
+  if(!res.ok){
+    tele("—","—","—","—");
+    slab("look","FEED DOWN",
+      "Can't reach airplanes.live. That's the data source, not the aircraft — "
+      +"nothing is known about BA213 right now.", "No connection");
+    silhouette(null);
+    return;
+  }
+
+  if(res.ac){ remember(res.ac); paintLive(res.ac,null); return; }
+
+  /* nothing in the feed — fall back to a recent reading if we have one */
+  if(LAST && (Date.now()-LAST.t)<STALE){
+    paintLive(LAST.ac, ago(Date.now()-LAST.t));
+    return;
+  }
+
+  tele("—","—","—","—"); silhouette(null);
+  if(now<w.dep){
+    slab("idle","STANDBY","Scheduled out at <b>"+clock(w.dep)+"</b> Boston time.",
+      "Not yet departed");
+    progress(0,"—");
+  } else if(now < new Date(w.dep.getTime()+35*60000)){
+    slab("idle","ON STAND",
+      "Scheduled out at <b>"+clock(w.dep)+"</b>. Nothing transmitting yet — "
+      +"the callsign usually appears within a few minutes.", "Taxiing at Heathrow");
+    progress(0,"—");
+  } else if(now<w.arr){
+    slab("idle","OUT OF RANGE",
+      "Airborne, but between receivers. Ocean coverage is thin — try again shortly.",
+      "Mid-Atlantic gap");
+  } else {
+    slab("idle","DOWN","Scheduled arrival <b>"+clock(w.arr)+"</b> has passed.",
+      "Today's run is over");
+    progress(100,"0 nm");
   }
 }
 
@@ -427,12 +447,11 @@ function sync(){
       paint(r[0],r[1]);
       $("stamp").textContent="SYNC "+clock(new Date());
     })
-    .catch(function(){ $("stamp").textContent="SYNC FAILED"; })
-    .then(function(){ busy=false; $("reload").removeAttribute("data-busy"); });
+    .then(function(){ busy=false; $("reload").removeAttribute("data-busy"); },
+          function(){ busy=false; $("reload").removeAttribute("data-busy"); });
 }
 
-initMap();
-sync();
+initMap(); sync();
 setInterval(function(){ if(!document.hidden) sync(); },20000);
 document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
 $("reload").addEventListener("click",sync);
