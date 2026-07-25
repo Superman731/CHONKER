@@ -161,7 +161,7 @@ body{
 </div>
 
 <div class="rows">
-  <div class="cell"><div class="k">Wheels down (live)</div><div class="v live" id="eta">——</div></div>
+  <div class="cell"><div class="k" id="etak">Wheels down (live)</div><div class="v live" id="eta">——</div></div>
   <div class="cell"><div class="k">Scheduled</div><div class="v sched" id="sched">——</div></div>
 </div>
 
@@ -185,7 +185,7 @@ body{
   <div id="watchsub"></div>
 </div>
 
-<a class="esc" id="esc" href="https://globe.adsb.fi/?callsign=BAW213" target="_blank" rel="noopener">OPEN FULL MAP — ADSB.FI ↗</a>
+<a class="esc" id="esc" href="https://globe.adsb.fi/?icao=40688b" target="_blank" rel="noopener">OPEN FULL MAP — ADSB.FI ↗</a>
 
 <p class="foot">
   Live ADS-B via airplanes.live &mdash; the community feed that allows browser access.<br>
@@ -364,8 +364,17 @@ function paintLive(ac,stale){
   var togo=gcNm({lat:ac.lat,lon:ac.lon},BOS);
   var reg=ac.r?ac.r.trim():"unknown tail";
 
-  $("eta").textContent = (!onGnd && gs>60)
-    ? clock(new Date(now.getTime()+(togo/gs)*3600000)) : "——";
+  var cruising = !onGnd && alt>15000 && gs>250;
+  if(cruising){
+    $("etak").textContent="Wheels down (live)";
+    $("eta").textContent=clock(new Date(now.getTime()+(togo/gs)*3600000));
+    $("eta").className="v live";
+  } else {
+    $("etak").textContent="Wheels down (scheduled)";
+    $("eta").textContent=clock(window_().arr);
+    $("eta").className="v sched";
+  }
+  if(ac.hex) $("esc").href="https://globe.adsb.fi/?icao="+ac.hex;
   progress(100*(1-togo/GC_TOTAL), Math.round(togo).toLocaleString()+" nm to run");
   tele(onGnd?"GND":Math.round(alt).toLocaleString(),
        Math.round(gs)+" kt", Math.round(trk)+"°",
